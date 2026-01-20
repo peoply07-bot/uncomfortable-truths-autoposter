@@ -4,11 +4,11 @@ import edge_tts
 
 
 VOICE = os.getenv("TTS_VOICE", "en-US-GuyNeural")  # Hombre serio USA
-RATE = os.getenv("TTS_RATE", "-5%")               # Ligeramente más lento (mejor claridad)
-PITCH = os.getenv("TTS_PITCH", "-2Hz")            # Un poco más grave
+RATE = os.getenv("TTS_RATE", "-5%")               # un poco más lento
+PITCH = os.getenv("TTS_PITCH", "-2Hz")            # un poco más grave
 
 
-async def tts_to_file(text: str, out_path: str):
+async def _tts_to_file(text: str, out_path: str):
     text = (text or "").strip()
     if not text:
         raise ValueError("TTS text is empty")
@@ -24,8 +24,14 @@ async def tts_to_file(text: str, out_path: str):
     await communicate.save(out_path)
 
 
+def make_tts(text: str, out_path: str):
+    """
+    Mantengo este nombre porque main.py lo importa así:
+      from engine.tts import make_tts
+    """
+    asyncio.run(_tts_to_file(text, out_path))
+
+
+# Alias extra por si en algún archivo aparece otro nombre
 def synthesize(text: str, out_path: str):
-    """
-    Sync wrapper used by the rest of the code.
-    """
-    asyncio.run(tts_to_file(text, out_path))
+    return make_tts(text, out_path)
