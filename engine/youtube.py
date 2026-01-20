@@ -1,34 +1,49 @@
-import json
 import os
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from google.oauth2.credentials import Credentials
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
-def upload_short(video, title, description):
-    creds = Credentials.from_authorized_user_info(
-        json.loads(os.environ["YOUTUBE_TOKEN_JSON"]),
-        SCOPES
-    )
+def get_youtube_service():
+    token_json = os.getenv("YOUTUBE_TOKEN_JSON", "")
+    if not token_json:
+        raise RuntimeError("Missing YOUTUBE_TOKEN_JSON secret")
 
-    yt = build("youtube", "v3", credentials=creds)
+    creds = Credentials.from_authorized_user_info(eval(token_json), scopes=[
+        "https://www.googleapis.com/auth/youtube.upload"
+    ])
+    return build("youtube", "v3", credentials=creds)
+
+
+def upload_short(video_path: str, title: str, description: str = "", tags=None):
+    youtube = get_youtube_service()
+
+    privacy = os.getenv("YT_PRIVACY", "private").strip().lower()
+    if privacy not in ("private", "unlisted", "public"):
+        privacy = "private"
+
+    tags = tags or []
 
     body = {
         "snippet": {
-            "title": title[:95],
+            "title": title,
             "description": description,
+            "tags": tags,
             "categoryId": "22"
         },
         "status": {
-            "privacyStatus": "public",
+            "privacyStatus": privacy,
             "selfDeclaredMadeForKids": False
         }
     }
 
-    media = MediaFileUpload(video, mimetype="video/mp4", resumable=True)
-    yt.videos().insert(
+    media = MediaFileUpload(video_path, mimetype="video/*", resumable=True)
+
+    req = youtube.videos().insert(
         part="snippet,status",
         body=body,
         media_body=media
-    ).execute()
+    )
+
+    res = req.execute()
+    return res
