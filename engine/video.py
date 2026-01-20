@@ -1,5 +1,6 @@
 import os
 import random
+import numpy as np
 
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
@@ -12,12 +13,12 @@ def sanitize_text(s: str) -> str:
     if not s:
         return s
     return (
-        s.replace("\u2019", "")   # ’
-         .replace("\u2018", "")   # ‘
-         .replace("\u201C", "")   # “
-         .replace("\u201D", "")   # ”
-         .replace("\u2014", "-")  # —
-         .replace("\u2013", "-")  # –
+        s.replace("\u2019", "")     # ’
+         .replace("\u2018", "")     # ‘
+         .replace("\u201C", "")     # “
+         .replace("\u201D", "")     # ”
+         .replace("\u2014", "-")    # —
+         .replace("\u2013", "-")    # –
          .replace("\u2026", "...")  # …
     )
 
@@ -34,17 +35,16 @@ def render_short(audio_path, lines, out_path):
     # Video base
     base = ImageClip(bg_path).resize((W, H)).set_duration(audio.duration)
 
-    # Capa de texto
+    # Capa de texto (PIL -> numpy)
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    # Fuente segura (Unicode OK)
+    # Fuente segura en GitHub Actions
     font = ImageFont.truetype(
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         60
     )
 
-    # Posición inicial
     y = 400
     line_height = 80
 
@@ -53,7 +53,9 @@ def render_short(audio_path, lines, out_path):
         draw.text((80, y), line, fill="white", font=font)
         y += line_height
 
-    overlay = ImageClip(img).set_duration(audio.duration)
+    # MoviePy necesita numpy array con shape
+    overlay_np = np.array(img)
+    overlay = ImageClip(overlay_np).set_duration(audio.duration)
 
     final = CompositeVideoClip([base, overlay]).set_audio(audio)
 
