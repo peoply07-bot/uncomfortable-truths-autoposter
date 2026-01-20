@@ -1,4 +1,4 @@
-import json
+    import json
 import os
 import random
 from datetime import datetime
@@ -8,13 +8,13 @@ HISTORY_PATH = "data/history.json"
 SCRIPTS = [
     {
         "title": "AN UNCOMFORTABLE TRUTH",
-        "narration": (
+        "script": (
             "Most people don’t fear failure.\n"
             "They fear realizing they never tried.\n"
             "Comfort feels safe—until it traps you.\n"
             "Start before you feel ready."
         ),
-        "onscreen_lines": [
+        "onscreen_text": [
             "MOST PEOPLE DON'T FEAR FAILURE",
             "THEY FEAR NEVER TRYING",
             "COMFORT FEELS SAFE",
@@ -24,13 +24,13 @@ SCRIPTS = [
     },
     {
         "title": "THE TRUTH ABOUT MOTIVATION",
-        "narration": (
+        "script": (
             "Motivation is unreliable.\n"
             "Discipline is what stays.\n"
             "If you only act when you feel inspired,\n"
             "you’ll stay average forever."
         ),
-        "onscreen_lines": [
+        "onscreen_text": [
             "MOTIVATION IS UNRELIABLE",
             "DISCIPLINE STAYS",
             "ACT WITHOUT INSPIRATION",
@@ -40,13 +40,13 @@ SCRIPTS = [
     },
     {
         "title": "SUCCESS HAS A COST",
-        "narration": (
+        "script": (
             "Success has a cost.\n"
             "And most people don’t want to pay it.\n"
             "They want the results,\n"
             "without the discomfort."
         ),
-        "onscreen_lines": [
+        "onscreen_text": [
             "SUCCESS HAS A COST",
             "MOST PEOPLE WON'T PAY IT",
             "THEY WANT RESULTS",
@@ -58,19 +58,11 @@ SCRIPTS = [
 
 
 def _normalize_history(obj) -> dict:
-    """
-    Acepta history.json como:
-    - dict: {"uploaded_titles": [...], "runs": [...]}
-    - list: ["TITLE1", "TITLE2"]  -> se convierte a {"uploaded_titles":[...], "runs":[]}
-    - list: [{"title":"..."}, ...] -> extrae titles si aplica
-    - vacío / corrupto -> default
-    """
     default = {"uploaded_titles": [], "runs": []}
 
     if obj is None:
         return default
 
-    # Caso correcto: dict
     if isinstance(obj, dict):
         obj.setdefault("uploaded_titles", [])
         obj.setdefault("runs", [])
@@ -80,7 +72,6 @@ def _normalize_history(obj) -> dict:
             obj["runs"] = []
         return obj
 
-    # Caso: list
     if isinstance(obj, list):
         titles = []
         for item in obj:
@@ -90,7 +81,6 @@ def _normalize_history(obj) -> dict:
                 titles.append(item["title"])
         return {"uploaded_titles": titles, "runs": []}
 
-    # Caso: cualquier otra cosa
     return default
 
 
@@ -114,38 +104,39 @@ def _save_history(path: str, data: dict) -> None:
 
 def _pick_script(history: dict) -> dict:
     used = set(t.strip().upper() for t in history.get("uploaded_titles", []) if isinstance(t, str))
-
     candidates = [s for s in SCRIPTS if s["title"].strip().upper() not in used]
     if not candidates:
         candidates = SCRIPTS[:]
-
     return random.choice(candidates)
 
 
 def build_script() -> dict:
     """
-    main.py llama build_script() y espera:
-    - title
-    - description
-    - narration
-    - onscreen_lines
+    main.py espera que esto regrese un dict 'candidate' con al menos:
+      - candidate["title"]
+      - candidate["description"]
+      - candidate["script"]         <-- CLAVE CRÍTICA (TTS)
+      - candidate["onscreen_text"]  <-- para subtítulos en video
     """
     history = _load_history(HISTORY_PATH)
-    script = _pick_script(history)
+    picked = _pick_script(history)
 
-    title = script["title"].strip().upper()
-    hashtags = script.get("hashtags", ["#shorts", "#truth"])
+    title = picked["title"].strip().upper()
+    hashtags = picked.get("hashtags", ["#shorts", "#truth"])
     description = "\n".join(hashtags)
 
-    payload = {
+    candidate = {
         "title": title,
         "description": description,
-        "narration": script["narration"],
-        "onscreen_lines": script["onscreen_lines"],
+        "script": picked["script"],                 # <-- lo que lee la voz
+        "onscreen_text": picked["onscreen_text"],   # <-- lo que sale en pantalla
         "meta": {"picked_at": datetime.utcnow().isoformat() + "Z"},
     }
 
-    history.setdefault("runs", []).append({"title": title, "ts": payload["meta"]["picked_at"]})
+    history.setdefault("uploaded_titles", [])
+    history.setdefault("runs", [])
+
+    history["runs"].append({"title": title, "ts": candidate["meta"]["picked_at"]})
     _save_history(HISTORY_PATH, history)
 
-    return payload
+    return candidate
