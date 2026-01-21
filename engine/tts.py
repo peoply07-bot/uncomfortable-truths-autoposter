@@ -1,37 +1,43 @@
-import os
 import asyncio
+import json
+import os
 import edge_tts
 
-
-VOICE = os.getenv("TTS_VOICE", "en-US-GuyNeural")  # Hombre serio USA
-RATE = os.getenv("TTS_RATE", "-5%")               # un poco más lento
-PITCH = os.getenv("TTS_PITCH", "-2Hz")            # un poco más grave
+VOICE = os.getenv("TTS_VOICE", "en-US-GuyNeural")
 
 
-async def _tts_to_file(text: str, out_path: str):
-    text = (text or "").strip()
-    if not text:
-        raise ValueError("TTS text is empty")
+async def _run(text: str, out_audio_path: str, out_meta_path: str):
+    communicate = edge_tts.Communicate(text=text, voice=VOICE)
 
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    words = []
+    with open(out_audio_path, "wb") as f:
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                f.write(chunk["data"])
+            elif chunk["type"] == "WordBoundary":
+                # offset/duration vienen en ticks de 100ns
+                offset_s = chunk["offset"] / 10_000_000
+                duration_s = chunk["duration"] / 10_000_000
+                w = (chunk.get("text") or "").strip()
+                if w:
+                    words.append({
+                        "text": w,
+                        "offset_s": float(offset_s),
+                        "duration_s": float(duration_s),
+                    })
 
-    communicate = edge_tts.Communicate(
-        text=text,
-        voice=VOICE,
-        rate=RATE,
-        pitch=PITCH,
-    )
-    await communicate.save(out_path)
+    meta = {
+        "voice": VOICE,
+        "words": words,
+    }
+    with open(out_meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
-def make_tts(text: str, out_path: str):
+def make_tts(text: str, out_audio_path: str):
     """
-    Mantengo este nombre porque main.py lo importa así:
-      from engine.tts import make_tts
+    Genera audio y un JSON con tiempos por palabra:
+      out_audio_path + ".json"
     """
-    asyncio.run(_tts_to_file(text, out_path))
-
-
-# Alias extra por si en algún archivo aparece otro nombre
-def synthesize(text: str, out_path: str):
-    return make_tts(text, out_path)
+    out_meta_path = out_audio_path + ".json"
+    asyncio.run(_run(text, out_audio_path, out_meta_path))
