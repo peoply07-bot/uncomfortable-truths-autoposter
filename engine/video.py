@@ -1,23 +1,24 @@
 import os
 import random
-import json
-from typing import List, Union, Tuple
+from typing import List
 
 import numpy as np
-from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
+from moviepy.editor import (
+    ImageClip, AudioFileClip, CompositeVideoClip
+)
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 1920
 
 
-def _font():
+def _font(size=86):
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
     for p in candidates:
         if os.path.exists(p):
-            return ImageFont.truetype(p, 86)
+            return ImageFont.truetype(p, size)
     return ImageFont.load_default()
 
 
@@ -57,16 +58,13 @@ def _pick_background(topic_hint: str) -> str:
                 break
 
     if chosen_folder is None:
-        if os.path.isdir(os.path.join(root, "general")):
-            chosen_folder = os.path.join(root, "general")
-        else:
-            chosen_folder = root
+        chosen_folder = os.path.join(root, "general") if os.path.isdir(os.path.join(root, "general")) else root
 
-    files = []
-    for fn in os.listdir(chosen_folder):
-        if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
-            files.append(os.path.join(chosen_folder, fn))
-
+    files = [
+        os.path.join(chosen_folder, fn)
+        for fn in os.listdir(chosen_folder)
+        if fn.lower().endswith((".jpg", ".jpeg", ".png", ".webp"))
+    ]
     if not files:
         raise RuntimeError(f"No images found in {chosen_folder}")
 
@@ -86,204 +84,109 @@ def _ken_burns(clip: ImageClip, duration: float) -> ImageClip:
         dy = int((0.5 - p) * 2 * max_dy)
         return (dx, dy)
 
-    return clip.set_duration(duration).resize(zoom).set_position(pos)
+    return (
+        clip.set_duration(duration)
+            .resize(zoom)
+            .set_position(pos)
+    )
 
 
-def _normalize_text_input(text_or_lines: Union[List[str], str]) -> str:
-    if text_or_lines is None:
-        return ""
-    if isinstance(text_or_lines, list):
-        return " ".join([str(x).strip() for x in text_or_lines if str(x).strip()])
-    return str(text_or_lines).strip()
-
-
-def _layout_words(draw: ImageDraw.ImageDraw, words: List[str], font: ImageFont.FreeTypeFont, max_width: int) -> List[List[str]]:
+def _draw_text_image(lines: List[str]) -> Image.Image:
     """
-    Wrap en máximo 2 líneas por palabras.
-    """
-    lines: List[List[str]] = []
-    cur: List[str] = []
-
-    for w in words:
-        if not w:
-            continue
-
-        test = (" ".join(cur + [w])).strip()
-        bbox = draw.textbbox((0, 0), test, font=font)
-        tw = bbox[2] - bbox[0]
-
-        if tw <= max_width or not cur:
-            cur.append(w)
-        else:
-            lines.append(cur)
-            cur = [w]
-
-        if len(lines) == 2:
-            # si ya hay 2 líneas, el resto lo pegamos en la 2da (sin seguir bajando)
-            # para mantener look Shorts (no columna)
-            pass
-
-    if cur:
-        if len(lines) < 2:
-            lines.append(cur)
-        else:
-            # si ya hay 2 líneas, agrega al final de la última
-            lines[-1].extend(cur)
-
-    return lines[:2]
-
-
-def _text_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont) -> int:
-    bbox = draw.textbbox((0, 0), text, font=font)
-    return int(bbox[2] - bbox[0])
-
-
-def _render_karaoke_frame(lines_words: List[List[str]],
-                          font: ImageFont.FreeTypeFont,
-                          highlight: Tuple[int, int],
-                          reveal_upto: Tuple[int, int]) -> Image.Image:
-    """
-    Dibuja:
-    - lo revelado en blanco (con borde negro)
-    - la palabra actual en verde
-    highlight: (line_idx, word_idx) para palabra actual o (-1,-1) si ninguna
-    reveal_upto: (line_idx, word_idx) último revelado incluido
+    Texto grande con borde negro, centrado y en zona baja (visible en Shorts).
     """
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
-    max_width = int(W * 0.86)
-    line_h = int(font.size * 1.15)
+    font = _font(86)
 
-    # calcular start_y para centrar bloque en zona centro-baja
-    total_h = line_h * len(lines_words)
-    start_y = int(H * 0.72) - int(total_h / 2)
+    # Más abajo pero siempre visible (ajustado)
+    y = int(H * 0.68)
 
-    stroke = 6
+    for line in lines:
+        line = _sanitize(line).strip().upper()
+        if not line:
+            continue
 
-    # precomputar ancho de cada línea para centrar
-    line_texts = [" ".join(lw) for lw in lines_words]
-    line_widths = [_text_width(draw, t, font) for t in line_texts]
-    x_starts = [int((W - w) / 2) for w in line_widths]
+        bbox = draw.textbbox((0, 0), line, font=font)
+        tw = bbox[2] - bbox[0]
+        x = int((W - tw) / 2)
 
-    def draw_word(x, y, word, fill, shadow=False):
-        if shadow:
-            draw.text((x + 4, y + 4), word, font=font, fill=(0, 255, 70, 170))
-        # borde negro
+        stroke = 6
         for ox in range(-stroke, stroke + 1):
             for oy in range(-stroke, stroke + 1):
                 if ox == 0 and oy == 0:
                     continue
-                draw.text((x + ox, y + oy), word, font=font, fill=(0, 0, 0, 255))
-        draw.text((x, y), word, font=font, fill=fill)
+                draw.text((x + ox, y + oy), line, font=font, fill=(0, 0, 0, 255))
 
-    # render
-    for li, lw in enumerate(lines_words):
-        y = start_y + li * line_h
-        x = x_starts[li]
-
-        # dibujar palabras hasta reveal_upto
-        for wi, w in enumerate(lw):
-            # decidir si esta palabra ya está revelada
-            revealed = (li < reveal_upto[0]) or (li == reveal_upto[0] and wi <= reveal_upto[1])
-            if not revealed:
-                # no dibujar palabras futuras (esto crea el efecto "va escribiendo")
-                continue
-
-            # medir prefijo para posición
-            prefix = " ".join(lw[:wi]) + (" " if wi > 0 else "")
-            dx = _text_width(draw, prefix, font)
-            wx = x + dx
-
-            # highlight si corresponde
-            if li == highlight[0] and wi == highlight[1]:
-                draw_word(wx, y, w, fill=(0, 255, 70, 255), shadow=False)
-            else:
-                draw_word(wx, y, w, fill=(255, 255, 255, 255), shadow=True)
+        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
+        y += 110
 
     return img
 
 
-def _load_word_timings(audio_path: str) -> List[dict]:
-    meta_path = audio_path + ".json"
-    if not os.path.exists(meta_path):
-        return []
-    try:
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-        return meta.get("words", []) if isinstance(meta, dict) else []
-    except Exception:
-        return []
+def _split_into_segments(onscreen_lines: List[str], max_lines_per_screen: int = 2) -> List[List[str]]:
+    segs = []
+    cur = []
+    for l in onscreen_lines:
+        l = (l or "").strip()
+        if not l:
+            continue
+        cur.append(l)
+        if len(cur) >= max_lines_per_screen:
+            segs.append(cur)
+            cur = []
+    if cur:
+        segs.append(cur)
+    return segs
 
 
-def render_short(audio_path: str, onscreen_text: Union[List[str], str], out_path: str, topic_hint: str = ""):
+def _imageclip_rgba_with_mask(pil_rgba: Image.Image) -> ImageClip:
+    """
+    CRÍTICO: MoviePy puede ignorar alfa.
+    Solución: crear clip RGB + mask explícita (alpha/255).
+    """
+    arr = np.array(pil_rgba)  # (H,W,4)
+    rgb = arr[:, :, :3]
+    alpha = arr[:, :, 3] / 255.0
+
+    clip = ImageClip(rgb)
+    mask = ImageClip(alpha, ismask=True)
+    clip = clip.set_mask(mask)
+    return clip
+
+
+def render_short(audio_path: str, onscreen_lines: List[str], out_path: str, topic_hint: str = ""):
     audio = AudioFileClip(audio_path)
     dur = float(audio.duration)
 
-    # Texto del subtítulo = lo que se narra (por eso en main.py lo pasas candidate["script"])
-    txt = _sanitize(_normalize_text_input(onscreen_text)).upper().strip()
-
-    # Fondo
     bg_path = _pick_background(topic_hint)
     base = ImageClip(bg_path).resize((W, H))
     base = _ken_burns(base, dur)
 
-    # Timings palabra por palabra del TTS
-    timings = _load_word_timings(audio_path)
-    if not timings:
-        # fallback: subtítulo estático (no karaoke)
-        # (pero si llegas aquí es porque no se generó el JSON)
-        img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        arr = np.array(img)
-        final = CompositeVideoClip([base, ImageClip(arr).set_duration(dur)], size=(W, H)).set_audio(audio)
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-        final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
-        return
+    segments = _split_into_segments(onscreen_lines, max_lines_per_screen=2)
 
-    # Tokenizar texto para layout (subtítulo normal, no letra por letra)
-    words = [w for w in txt.split() if w]
-    draw_tmp = ImageDraw.Draw(Image.new("RGBA", (W, H), (0, 0, 0, 0)))
-    font = _font()
-    lines_words = _layout_words(draw_tmp, words, font, max_width=int(W * 0.86))
-
-    # Construir clips por “saltos” de palabra (no frame por frame)
-    # Esto hace el efecto "va escribiendo" y además resalta palabra actual.
-    overlays = []
-    # map de palabra index global -> (line_idx, word_idx)
-    mapping = []
-    for li, lw in enumerate(lines_words):
-        for wi, _ in enumerate(lw):
-            mapping.append((li, wi))
-
-    # Alinear timings con cantidad de palabras del texto (mejor esfuerzo)
-    # edge-tts devuelve palabras del audio; si hay más/menos, usamos el mínimo
-    n = min(len(mapping), len(timings))
-
-    # Si por alguna razón hay 0, salir con fallback
-    if n <= 0:
+    if not segments:
+        # si no hay texto, igual saca video con fondo + audio
         final = CompositeVideoClip([base], size=(W, H)).set_audio(audio)
         os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
         return
 
-    # Generar imagen por cada palabra (cambia en cada boundary)
-    for i in range(n):
-        start = float(timings[i]["offset_s"])
-        end = float(timings[i]["offset_s"] + timings[i]["duration_s"])
-        # si duration viene muy corta, ampliamos un poco
-        end = max(end, start + 0.08)
+    # Duración proporcional al texto
+    weights = [max(1, sum(len(x) for x in seg)) for seg in segments]
+    total_w = sum(weights)
+    seg_durs = [dur * (w / total_w) for w in weights]
 
-        # Última palabra: extiende hasta el final del audio
-        if i == n - 1:
-            end = dur
-
-        highlight = mapping[i]
-        reveal_upto = mapping[i]
-
-        frame = _render_karaoke_frame(lines_words, font, highlight=highlight, reveal_upto=reveal_upto)
-        ov = ImageClip(np.array(frame)).set_start(start).set_duration(max(0.01, end - start))
+    overlays = []
+    t = 0.0
+    for seg, sd in zip(segments, seg_durs):
+        img = _draw_text_image(seg)
+        ov = _imageclip_rgba_with_mask(img).set_start(t).set_duration(sd)
         overlays.append(ov)
+        t += sd
 
     final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
+
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
