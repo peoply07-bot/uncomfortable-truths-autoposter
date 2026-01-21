@@ -26,7 +26,9 @@ def run():
     video = f"out/{ts}.mp4"
 
     make_tts(candidate["script"], audio)
-    render_short(audio, candidate["onscreen_text"], video)
+    #render_short(audio, candidate["onscreen_text"], video)
+    render_short(audio, candidate["script"], video)
+
 
     upload_short(
         video,
