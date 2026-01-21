@@ -25,19 +25,17 @@ def run():
     audio = f"out/{ts}.mp3"
     video = f"out/{ts}.mp4"
 
-    make_tts(candidate["script"], audio)
-    #render_short(audio, candidate["onscreen_text"], video)
-    lines = []
-    title_line = (candidate.get("title") or "").strip()
-    if title_line:
-        lines.append(title_line)
-    
-    lines = []
-    if candidate.get("title"):
-        lines.append(candidate["title"])
-    lines += candidate.get("onscreen_text", []) or []
-    
-    render_short(audio, lines, video, topic_hint=candidate.get("title",""))
+    meta = make_tts(candidate["script"], audio)  # devuelve out/xxxx.json
+
+    render_short(
+        audio_path=audio,
+        title=candidate["title"],
+        script_text=candidate["script"],
+        out_path=video,
+        topic_hint=candidate["title"],
+        meta_path=meta
+    )
+
 
 
 
