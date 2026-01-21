@@ -1,142 +1,103 @@
 import json
 import os
 import random
-from datetime import datetime
 
-HISTORY_PATH = "data/history.json"
+SCRIPTS_PATH = os.path.join("data", "scripts.json")
 
-SCRIPTS = [
+# Fallback por si no existe data/scripts.json
+FALLBACK = [
     {
         "title": "AN UNCOMFORTABLE TRUTH",
-        "script": (
-            "Most people don’t fear failure.\n"
-            "They fear realizing they never tried.\n"
-            "Comfort feels safe—until it traps you.\n"
-            "Start before you feel ready."
-        ),
-        "onscreen_text": [
-            "MOST PEOPLE DON'T FEAR FAILURE",
-            "THEY FEAR NEVER TRYING",
-            "COMFORT FEELS SAFE",
-            "UNTIL IT TRAPS YOU",
-        ],
-        "hashtags": ["#shorts", "#truth", "#mindset", "#psychology"],
-    },
-    {
-        "title": "THE TRUTH ABOUT MOTIVATION",
-        "script": (
-            "Motivation is unreliable.\n"
-            "Discipline is what stays.\n"
-            "If you only act when you feel inspired,\n"
-            "you’ll stay average forever."
-        ),
-        "onscreen_text": [
-            "MOTIVATION IS UNRELIABLE",
-            "DISCIPLINE STAYS",
-            "ACT WITHOUT INSPIRATION",
-            "OR STAY AVERAGE",
-        ],
-        "hashtags": ["#shorts", "#discipline", "#mindset", "#truth"],
-    },
-    {
-        "title": "SUCCESS HAS A COST",
-        "script": (
-            "Success has a cost.\n"
-            "And most people don’t want to pay it.\n"
-            "They want the results,\n"
-            "without the discomfort."
-        ),
-        "onscreen_text": [
-            "SUCCESS HAS A COST",
-            "MOST PEOPLE WON'T PAY IT",
-            "THEY WANT RESULTS",
-            "WITHOUT DISCOMFORT",
-        ],
-        "hashtags": ["#shorts", "#success", "#truth", "#mindset"],
-    },
+        "script": "Most people don't fear failure. They fear realization: "
+                  "that they're replaceable. Comfort feels safe—until it traps you.",
+        "onscreen_text": "MOST PEOPLE DON'T FEAR FAILURE.\nTHEY FEAR BEING REPLACEABLE.",
+        "hashtags": ["psychology", "mindset", "truth"]
+    }
 ]
 
-
-def _normalize_history(obj) -> dict:
-    default = {"uploaded_titles": [], "runs": []}
-
-    if obj is None:
-        return default
-
-    if isinstance(obj, dict):
-        obj.setdefault("uploaded_titles", [])
-        obj.setdefault("runs", [])
-        if not isinstance(obj["uploaded_titles"], list):
-            obj["uploaded_titles"] = []
-        if not isinstance(obj["runs"], list):
-            obj["runs"] = []
-        return obj
-
-    if isinstance(obj, list):
-        titles = []
-        for item in obj:
-            if isinstance(item, str):
-                titles.append(item)
-            elif isinstance(item, dict) and "title" in item and isinstance(item["title"], str):
-                titles.append(item["title"])
-        return {"uploaded_titles": titles, "runs": []}
-
-    return default
-
-
-def _load_history(path: str) -> dict:
-    if not os.path.exists(path):
-        return {"uploaded_titles": [], "runs": []}
-
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = json.load(f)
-        return _normalize_history(raw)
-    except Exception:
-        return {"uploaded_titles": [], "runs": []}
-
-
-def _save_history(path: str, data: dict) -> None:
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-
-def _pick_script(history: dict) -> dict:
-    used = set(t.strip().upper() for t in history.get("uploaded_titles", []) if isinstance(t, str))
-    candidates = [s for s in SCRIPTS if s["title"].strip().upper() not in used]
-    if not candidates:
-        candidates = SCRIPTS[:]
-    return random.choice(candidates)
-
-
-def build_script() -> dict:
+def _load_scripts():
     """
-    main.py espera que esto regrese un dict 'candidate' con al menos:
-      - candidate["title"]
-      - candidate["description"]
-      - candidate["script"]         <-- CLAVE CRÍTICA (TTS)
-      - candidate["onscreen_text"]  <-- para subtítulos en video
+    Carga candidatos desde data/scripts.json.
+    Soporta 2 formatos:
+      A) lista de objetos: [ {...}, {...} ]
+      B) objeto con key 'items': { "items": [ {...} ] }
     """
-    history = _load_history(HISTORY_PATH)
-    picked = _pick_script(history)
+    if not os.path.exists(SCRIPTS_PATH):
+        return FALLBACK
 
-    title = picked["title"].strip().upper()
-    hashtags = picked.get("hashtags", ["#shorts", "#truth"])
-    description = "\n".join(hashtags)
+    with open(SCRIPTS_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
 
-    candidate = {
+    if isinstance(data, dict):
+        items = data.get("items") or data.get("scripts") or data.get("data") or []
+    elif isinstance(data, list):
+        items = data
+    else:
+        items = []
+
+    if not items:
+        return FALLBACK
+
+    return items
+
+def _normalize_candidate(raw):
+    """
+    Normaliza llaves para que main.py SIEMPRE encuentre:
+      title, script, onscreen_text, hashtags
+    """
+    c = dict(raw) if isinstance(raw, dict) else {}
+
+    # title
+    title = c.get("title") or c.get("hook") or c.get("headline") or "AN UNCOMFORTABLE TRUTH"
+    title = str(title).strip().upper()  # TU requisito: MAYÚSCULAS
+
+    # script (lo que va a narrar la voz)
+    script = c.get("script") or c.get("narration") or c.get("voiceover") or c.get("text") or ""
+    script = str(script).strip()
+    if not script:
+        script = FALLBACK[0]["script"]
+
+    # onscreen_text (texto en pantalla; debe concordar con el script)
+    onscreen = c.get("onscreen_text") or c.get("subtitle") or c.get("caption") or c.get("text_on_screen")
+    if onscreen is None or str(onscreen).strip() == "":
+        # Si no existe, lo derivamos del script (1–2 líneas máximas)
+        s = script.replace("\n", " ").strip()
+        # Recorta a algo corto y potente
+        onscreen = s[:90].upper()
+        # Divide en 2 líneas si es largo
+        if len(onscreen) > 45:
+            onscreen = onscreen[:45].rstrip() + "\n" + onscreen[45:90].lstrip()
+    else:
+        onscreen = str(onscreen).strip().upper()
+
+    # hashtags (main.py espera lista)
+    tags = c.get("hashtags") or c.get("tags") or c.get("hashtag") or []
+    if isinstance(tags, str):
+        # permite "psychology mindset truth"
+        tags = [t.strip("# ").strip() for t in tags.replace(",", " ").split() if t.strip()]
+    if not isinstance(tags, list):
+        tags = []
+    tags = [str(t).strip("# ").strip() for t in tags if str(t).strip()]
+    if not tags:
+        tags = ["psychology", "mindset", "truth"]
+
+    return {
         "title": title,
-        "description": description,
-        "script": picked["script"],                 # <-- lo que lee la voz
-        "onscreen_text": picked["onscreen_text"],   # <-- lo que sale en pantalla
-        "meta": {"picked_at": datetime.utcnow().isoformat() + "Z"},
+        "script": script,
+        "onscreen_text": onscreen,
+        "hashtags": tags,
     }
 
-    history.setdefault("uploaded_titles", [])
-    history.setdefault("runs", [])
-
-    history["runs"].append({"title": title, "ts": candidate["meta"]["picked_at"]})
-    _save_history(HISTORY_PATH, history)
-
-    return candidate
+def build_script():
+    """
+    Devuelve un dict compatible con main.py:
+    {
+      "title": str,
+      "script": str,
+      "onscreen_text": str,
+      "hashtags": list[str]
+    }
+    """
+    scripts = _load_scripts()
+    picked = random.choice(scripts)
+    return _normalize_candidate(picked)
