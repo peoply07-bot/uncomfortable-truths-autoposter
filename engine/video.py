@@ -1,13 +1,10 @@
 import os
 import random
-from typing import List, Tuple
+from typing import List
 
 import numpy as np
-from moviepy.editor import (
-    ImageClip, AudioFileClip, CompositeVideoClip, vfx
-)
+from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
-
 
 W, H = 1080, 1920
 
@@ -36,6 +33,30 @@ def _sanitize(s: str) -> str:
          .replace("\u2013", "-")
          .replace("\u2026", "...")
     )
+
+
+def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
+    """
+    Parte un texto en múltiples líneas para que cada línea quepa en max_width.
+    Wrap por palabras (no letra) para conservar look horizontal.
+    """
+    words = text.split()
+    if not words:
+        return [""]
+
+    lines = []
+    cur = words[0]
+    for w in words[1:]:
+        test = cur + " " + w
+        bbox = draw.textbbox((0, 0), test, font=font)
+        tw = bbox[2] - bbox[0]
+        if tw <= max_width:
+            cur = test
+        else:
+            lines.append(cur)
+            cur = w
+    lines.append(cur)
+    return lines
 
 
 def _pick_background(topic_hint: str) -> str:
@@ -95,7 +116,6 @@ def _ken_burns(clip: ImageClip, duration: float) -> ImageClip:
         return 1.00 + 0.03 * (t / max(duration, 0.001))
 
     # Pan leve
-    # MoviePy permite position como función (x,y)
     max_dx = 40
     max_dy = 60
 
@@ -116,25 +136,41 @@ def _ken_burns(clip: ImageClip, duration: float) -> ImageClip:
 def _draw_text_image(lines: List[str]) -> Image.Image:
     """
     Renderiza texto grande con borde negro estilo shorts.
+    Ahora fuerza layout HORIZONTAL (1-2 líneas máximo por pantalla),
+    con wrap por ancho para evitar “columna vertical”.
     """
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _font()
 
-    # Posición estilo “centro-bajo”
-    y = int(H * 0.62)
+    # Une el contenido del segmento en una sola frase
+    text = " ".join([_sanitize(str(l)).strip() for l in lines if l and str(l).strip()]).upper().strip()
+    if not text:
+        return img
 
-    for line in lines:
-        line = _sanitize(line).upper()
-        if not line:
-            continue
+    # Ancho máximo permitido (margen lateral)
+    max_width = int(W * 0.86)
 
-        # Calcula ancho aproximado
+    # Wrap por palabras (1..N líneas)
+    wrapped = _wrap_text(draw, text, font, max_width=max_width)
+
+    # Limita a 2 líneas (Shorts look)
+    wrapped = wrapped[:2]
+
+    # Alto total para centrar el bloque
+    line_h = int(font.size * 1.15)
+    total_h = line_h * len(wrapped)
+
+    # Posición centro-bajo
+    start_y = int(H * 0.72) - int(total_h / 2)
+
+    for i, line in enumerate(wrapped):
         bbox = draw.textbbox((0, 0), line, font=font)
         tw = bbox[2] - bbox[0]
         x = int((W - tw) / 2)
+        y = start_y + i * line_h
 
-        # Borde (stroke manual)
+        # Stroke (borde negro)
         stroke = 6
         for ox in range(-stroke, stroke + 1):
             for oy in range(-stroke, stroke + 1):
@@ -145,14 +181,12 @@ def _draw_text_image(lines: List[str]) -> Image.Image:
         # Texto blanco principal
         draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
-        y += 110  # separación vertical
-
     return img
 
 
-def _split_into_segments(onscreen_lines: List[str], max_lines_per_screen: int = 2) -> List[List[str]]:
+def _split_into_segments(onscreen_lines: List[str], max_lines_per_screen: int = 1) -> List[List[str]]:
     """
-    Divide líneas en pantallas de 1-2 líneas grandes.
+    Divide en pantallas. Recomendado: 1 item por segmento para ritmo Shorts.
     """
     segs = []
     cur = []
@@ -174,12 +208,12 @@ def render_short(audio_path: str, onscreen_lines: List[str], out_path: str, topi
     base = ImageClip(bg_path).resize((W, H))
     base = _ken_burns(base, dur)
 
-    # Segmentos sincronizados (simple y efectivo):
-    segments = _split_into_segments(onscreen_lines, max_lines_per_screen=2)
+    # Segmentos
+    segments = _split_into_segments(onscreen_lines, max_lines_per_screen=1)
 
     # Duración proporcional a cantidad de texto por segmento
-    weights = [max(1, sum(len(x) for x in seg)) for seg in segments]
-    total_w = sum(weights)
+    weights = [max(1, sum(len(str(x)) for x in seg)) for seg in segments]
+    total_w = sum(weights) if sum(weights) > 0 else 1
     seg_durs = [dur * (w / total_w) for w in weights]
 
     overlays = []
