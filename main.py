@@ -32,9 +32,13 @@ def run():
     if title_line:
         lines.append(title_line)
     
+    lines = []
+    if candidate.get("title"):
+        lines.append(candidate["title"])
     lines += candidate.get("onscreen_text", []) or []
     
-    render_short(audio, lines, video, topic_hint=title_line)
+    render_short(audio, lines, video, topic_hint=candidate.get("title",""))
+
 
 
 
