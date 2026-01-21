@@ -27,7 +27,15 @@ def run():
 
     make_tts(candidate["script"], audio)
     #render_short(audio, candidate["onscreen_text"], video)
-    render_short(audio, candidate["script"], video)
+    lines = []
+    title_line = (candidate.get("title") or "").strip()
+    if title_line:
+        lines.append(title_line)
+    
+    lines += candidate.get("onscreen_text", []) or []
+    
+    render_short(audio, lines, video, topic_hint=title_line)
+
 
 
     upload_short(
