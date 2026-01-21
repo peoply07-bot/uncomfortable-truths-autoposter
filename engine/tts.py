@@ -33,11 +33,13 @@ async def _run(text: str, out_audio_path: str, out_meta_path: str):
     with open(out_meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-
 def make_tts(text: str, out_audio_path: str):
     """
     Genera audio y un JSON con tiempos por palabra:
       out_audio_path + ".json"
     """
+    # 🔑 ESTA LÍNEA ARREGLA TODO
+    os.makedirs(os.path.dirname(out_audio_path) or ".", exist_ok=True)
+
     out_meta_path = out_audio_path + ".json"
     asyncio.run(_run(text, out_audio_path, out_meta_path))
