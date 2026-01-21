@@ -1,6 +1,6 @@
 import os
 import random
-from typing import List
+from typing import List, Union
 
 import numpy as np
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
@@ -10,7 +10,6 @@ W, H = 1080, 1920
 
 
 def _font():
-    # En GitHub runner normalmente existe DejaVuSans
     candidates = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
@@ -36,10 +35,6 @@ def _sanitize(s: str) -> str:
 
 
 def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFont, max_width: int) -> List[str]:
-    """
-    Parte un texto en múltiples líneas para que cada línea quepa en max_width.
-    Wrap por palabras (no letra) para conservar look horizontal.
-    """
     words = text.split()
     if not words:
         return [""]
@@ -60,15 +55,6 @@ def _wrap_text(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.FreeTypeFon
 
 
 def _pick_background(topic_hint: str) -> str:
-    """
-    Selección por tema usando tus imágenes locales.
-    Estructura recomendada:
-      assets/backgrounds/space/*.jpg
-      assets/backgrounds/mindset/*.jpg
-      assets/backgrounds/money/*.jpg
-      assets/backgrounds/general/*.jpg   (fallback)
-    Si no existen subcarpetas, usa assets/backgrounds raíz.
-    """
     root = "assets/backgrounds"
     if not os.path.isdir(root):
         raise RuntimeError("Missing assets/backgrounds folder")
@@ -90,7 +76,6 @@ def _pick_background(topic_hint: str) -> str:
                 break
 
     if chosen_folder is None:
-        # usa general si existe
         if os.path.isdir(os.path.join(root, "general")):
             chosen_folder = os.path.join(root, "general")
         else:
@@ -108,14 +93,9 @@ def _pick_background(topic_hint: str) -> str:
 
 
 def _ken_burns(clip: ImageClip, duration: float) -> ImageClip:
-    """
-    Zoom + pan suave (Ken Burns).
-    """
-    # Zoom leve (3% total)
     def zoom(t):
         return 1.00 + 0.03 * (t / max(duration, 0.001))
 
-    # Pan leve
     max_dx = 40
     max_dy = 60
 
@@ -135,34 +115,30 @@ def _ken_burns(clip: ImageClip, duration: float) -> ImageClip:
 
 def _draw_text_image(lines: List[str]) -> Image.Image:
     """
-    Renderiza texto grande con borde negro estilo shorts.
-    Ahora fuerza layout HORIZONTAL (1-2 líneas máximo por pantalla),
-    con wrap por ancho para evitar “columna vertical”.
+    Texto normal (no letra por letra), máximo 2 líneas, centrado, con:
+    - borde negro
+    - sombra verde suave
+    - texto blanco encima
     """
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _font()
 
-    # Une el contenido del segmento en una sola frase
     text = " ".join([_sanitize(str(l)).strip() for l in lines if l and str(l).strip()]).upper().strip()
     if not text:
         return img
 
-    # Ancho máximo permitido (margen lateral)
     max_width = int(W * 0.86)
+    wrapped = _wrap_text(draw, text, font, max_width=max_width)[:2]
 
-    # Wrap por palabras (1..N líneas)
-    wrapped = _wrap_text(draw, text, font, max_width=max_width)
-
-    # Limita a 2 líneas (Shorts look)
-    wrapped = wrapped[:2]
-
-    # Alto total para centrar el bloque
     line_h = int(font.size * 1.15)
     total_h = line_h * len(wrapped)
-
-    # Posición centro-bajo
     start_y = int(H * 0.72) - int(total_h / 2)
+
+    stroke = 6
+    # sombra verde (offset leve)
+    shadow_dx, shadow_dy = 4, 4
+    shadow_color = (0, 255, 70, 170)  # verde con alpha
 
     for i, line in enumerate(wrapped):
         bbox = draw.textbbox((0, 0), line, font=font)
@@ -170,24 +146,44 @@ def _draw_text_image(lines: List[str]) -> Image.Image:
         x = int((W - tw) / 2)
         y = start_y + i * line_h
 
-        # Stroke (borde negro)
-        stroke = 6
+        # borde negro
         for ox in range(-stroke, stroke + 1):
             for oy in range(-stroke, stroke + 1):
                 if ox == 0 and oy == 0:
                     continue
                 draw.text((x + ox, y + oy), line, font=font, fill=(0, 0, 0, 255))
 
-        # Texto blanco principal
+        # sombra verde (una sola pasada, suave)
+        draw.text((x + shadow_dx, y + shadow_dy), line, font=font, fill=shadow_color)
+
+        # texto blanco
         draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
 
     return img
 
 
+def _normalize_onscreen(onscreen_lines: Union[List[str], str]) -> List[str]:
+    """
+    FIX CRÍTICO:
+    Si onscreen_lines es string, NO iterar carácter por carácter.
+    Lo convertimos a lista.
+    """
+    if onscreen_lines is None:
+        return []
+
+    if isinstance(onscreen_lines, str):
+        s = onscreen_lines.strip()
+        if not s:
+            return []
+        # Si trae saltos, respétalos como “frases”
+        parts = [p.strip() for p in s.split("\n") if p.strip()]
+        return parts if parts else [s]
+
+    # si ya es lista
+    return [str(x).strip() for x in onscreen_lines if str(x).strip()]
+
+
 def _split_into_segments(onscreen_lines: List[str], max_lines_per_screen: int = 1) -> List[List[str]]:
-    """
-    Divide en pantallas. Recomendado: 1 item por segmento para ritmo Shorts.
-    """
     segs = []
     cur = []
     for l in onscreen_lines:
@@ -200,21 +196,27 @@ def _split_into_segments(onscreen_lines: List[str], max_lines_per_screen: int = 
     return segs
 
 
-def render_short(audio_path: str, onscreen_lines: List[str], out_path: str, topic_hint: str = ""):
+def render_short(audio_path: str, onscreen_lines: Union[List[str], str], out_path: str, topic_hint: str = ""):
     audio = AudioFileClip(audio_path)
     dur = float(audio.duration)
+
+    # FIX: evitar letra-por-letra
+    onscreen_lines = _normalize_onscreen(onscreen_lines)
 
     bg_path = _pick_background(topic_hint)
     base = ImageClip(bg_path).resize((W, H))
     base = _ken_burns(base, dur)
 
-    # Segmentos
-    segments = _split_into_segments(onscreen_lines, max_lines_per_screen=1)
-
-    # Duración proporcional a cantidad de texto por segmento
-    weights = [max(1, sum(len(str(x)) for x in seg)) for seg in segments]
-    total_w = sum(weights) if sum(weights) > 0 else 1
-    seg_durs = [dur * (w / total_w) for w in weights]
+    # Si solo tienes 1 frase, se mantiene todo el video (subtítulo normal)
+    if len(onscreen_lines) <= 1:
+        segments = [onscreen_lines if onscreen_lines else [""]]
+        seg_durs = [dur]
+    else:
+        # 1 frase por “pantalla”
+        segments = _split_into_segments(onscreen_lines, max_lines_per_screen=1)
+        weights = [max(1, sum(len(str(x)) for x in seg)) for seg in segments]
+        total_w = sum(weights) if sum(weights) > 0 else 1
+        seg_durs = [dur * (w / total_w) for w in weights]
 
     overlays = []
     t = 0.0
