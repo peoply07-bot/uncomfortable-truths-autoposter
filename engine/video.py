@@ -169,25 +169,25 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
     return img
 
 
-def _draw_title(title: str) -> Image.Image:
-    title = _sanitize(title).strip().upper()
-    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    font = _font(92)
-    stroke = 8
-
-    y = int(H * 0.20)
-    bbox = draw.textbbox((0, 0), title, font=font)
-    tw = bbox[2] - bbox[0]
-    x = int((W - tw) / 2)
-
-    for ox in range(-stroke, stroke + 1):
-        for oy in range(-stroke, stroke + 1):
-            if ox == 0 and oy == 0:
-                continue
-            draw.text((x + ox, y + oy), title, font=font, fill=(0, 0, 0, 255))
-    draw.text((x, y), title, font=font, fill=(255, 255, 255, 255))
-    return img
+#def _draw_title(title: str) -> Image.Image:
+#    title = _sanitize(title).strip().upper()
+#    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+#    draw = ImageDraw.Draw(img)
+#    font = _font(92)
+#    stroke = 8
+#
+#    y = int(H * 0.20)
+#    bbox = draw.textbbox((0, 0), title, font=font)
+#    tw = bbox[2] - bbox[0]
+#    x = int((W - tw) / 2)
+#
+#    for ox in range(-stroke, stroke + 1):
+#        for oy in range(-stroke, stroke + 1):
+#            if ox == 0 and oy == 0:
+#                continue
+#            draw.text((x + ox, y + oy), title, font=font, fill=(0, 0, 0, 255))
+#    draw.text((x, y), title, font=font, fill=(255, 255, 255, 255))
+#    return img
 
 
 def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict[str, Any]]:
