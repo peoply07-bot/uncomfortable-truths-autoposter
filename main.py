@@ -25,7 +25,7 @@ def run():
     audio = f"out/{ts}.mp3"
     video = f"out/{ts}.mp4"
 
-    meta = make_tts(candidate["script"], audio)  # devuelve out/xxxx.json
+    meta = make_tts(candidate["script"], audio)
 
     render_short(
         audio_path=audio,
@@ -35,6 +35,7 @@ def run():
         topic_hint=candidate["title"],
         meta_path=meta
     )
+    
 
 
 
