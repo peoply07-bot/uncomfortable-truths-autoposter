@@ -268,6 +268,12 @@ def render_short(
     topic_hint: str = "",
     meta_path: Optional[str] = None
 ):
+    """
+    NUEVO COMPORTAMIENTO:
+    - NO hay título fijo al inicio.
+    - TODO el texto (título + guion) va palabra por palabra, sincronizado a la voz.
+    """
+
     audio = AudioFileClip(audio_path)
     dur = float(audio.duration)
 
@@ -277,43 +283,50 @@ def render_short(
 
     overlays: List[ImageClip] = []
 
-    # Título 1.4s
-    if title and title.strip():
-        timg = _draw_title(title)
-        overlays.append(_rgba_clip(timg).set_start(0).set_duration(min(1.4, dur)))
-
-    # cargar timings
-    words: List[Dict[str, Any]] = []
+    # 1) Cargar timings palabra a palabra (DEBE venir en meta["words"])
+    words = []
     if meta_path and os.path.exists(meta_path):
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
-        words = _normalize_word_timings(meta, dur)
+        words = meta.get("words", [])
 
+    # 2) Si no hay words, fallback estático (solo para no romper)
     if not words:
-        # fallback: bloque estático del script (sin sync real)
-        st = _sanitize(script_text).upper().strip()
+        full_text = f"{title}. {script_text}".strip()
+        st = _sanitize(full_text).upper().strip()
         if st:
             frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
-            overlays.append(_rgba_clip(frame).set_start(1.4).set_duration(max(0.1, dur - 1.4)))
-    else:
-        # rolling window: 12 palabras, highlight palabra actual
-        window = 12
+            overlays.append(_rgba_clip(frame).set_start(0).set_duration(dur))
+        final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
+        return
 
-        for i, w in enumerate(words):
-            start = float(w["start"])
-            end = float(w["end"])
+    # 3) Opcional: shift por delay mp3 (ajusta con env var SUB_SHIFT si lo necesitas)
+    shift = float(os.getenv("SUB_SHIFT", "0.0"))
+    if shift != 0.0:
+        for w in words:
+            w["start"] = max(0.0, float(w.get("start", 0.0)) + shift)
+            w["end"] = max(w["start"] + 0.05, float(w.get("end", w["start"] + 0.18)) + shift)
 
-            # subtítulos empiezan después del título
-            start = max(start, 1.2)
-            if end <= start or start >= dur:
-                continue
+    # 4) Rolling window: mostramos últimas N palabras y resaltamos la actual
+    window = int(os.getenv("SUB_WINDOW", "12"))  # puedes cambiar a 10, 14, etc.
 
-            lo = max(0, i - (window - 1))
-            chunk = [x["word"] for x in words[lo:i + 1]]
-            active = len(chunk) - 1
+    for i, w in enumerate(words):
+        start = float(w.get("start", 0.0))
+        end = float(w.get("end", start + 0.18))
 
-            frame = _draw_subtitle_frame(chunk, active_idx=active, y_ratio=0.74)
-            overlays.append(_rgba_clip(frame).set_start(start).set_duration(min(end - start, dur - start)))
+        if end <= start or start >= dur:
+            continue
+
+        lo = max(0, i - (window - 1))
+        chunk_words = [x.get("word", "") for x in words[lo:i + 1]]
+        chunk_words = [cw for cw in chunk_words if cw]
+
+        active = len(chunk_words) - 1  # la última palabra del chunk es la activa
+
+        frame = _draw_subtitle_frame(chunk_words, active_idx=active, y_ratio=0.74)
+        overlays.append(_rgba_clip(frame).set_start(start).set_duration(min(end - start, dur - start)))
 
     final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
