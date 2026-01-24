@@ -1,7 +1,7 @@
 import os
 import json
 import random
-from typing import List, Dict, Any, Tuple, Optional
+from typing import List, Optional, Dict, Any
 
 import numpy as np
 from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
@@ -41,7 +41,6 @@ def _pick_background(topic_hint: str) -> str:
         raise RuntimeError("Missing assets/backgrounds folder")
 
     hint = (topic_hint or "").lower()
-
     keyword_map = {
         "space": ["space", "planet", "universe", "galaxy", "star", "moon", "cosmos"],
         "money": ["money", "rich", "poor", "wealth", "broke", "income", "salary", "debt"],
@@ -111,14 +110,10 @@ def _wrap_words(draw: ImageDraw.ImageDraw, words: List[str], font: ImageFont.Ima
 
     if cur:
         lines.append(cur)
-    return lines[:2]  # máximo 2 líneas
+    return lines[:2]
 
 
-def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.72) -> Image.Image:
-    """
-    Dibuja un subtítulo (1-2 líneas) en blanco con borde negro,
-    y resalta la palabra activa en verde.
-    """
+def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.74) -> Image.Image:
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
 
@@ -126,21 +121,17 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
     stroke = 6
     max_width = int(W * 0.88)
 
-    # preparar texto saneado
-    clean = [_sanitize(w).upper() for w in words if w.strip()]
+    clean = [_sanitize(w).upper() for w in words if w and w.strip()]
     if not clean:
         return img
 
     lines = _wrap_words(draw, clean, font, max_width=max_width)
 
-    # calcular altura total
     line_h = 95
     total_h = len(lines) * line_h
     y0 = int(H * y_ratio) - total_h // 2
 
-    # índice global
     idx_global = 0
-
     for li, line_words in enumerate(lines):
         line_text = " ".join(line_words)
         bbox = draw.textbbox((0, 0), line_text, font=font)
@@ -148,7 +139,7 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
         x = int((W - tw) / 2)
         y = y0 + li * line_h
 
-        # Primero dibuja línea completa (borde + blanco)
+        # borde + blanco
         for ox in range(-stroke, stroke + 1):
             for oy in range(-stroke, stroke + 1):
                 if ox == 0 and oy == 0:
@@ -156,27 +147,21 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
                 draw.text((x + ox, y + oy), line_text, font=font, fill=(0, 0, 0, 255))
         draw.text((x, y), line_text, font=font, fill=(255, 255, 255, 255))
 
-        # Luego pinta SOLO la palabra activa en verde encima
-        # calculamos offset x por palabra
+        # overlay verde palabra activa
         cx = x
         for wi, w in enumerate(line_words):
-            w_text = w
             prefix = "" if wi == 0 else " "
-            prefix_bbox = draw.textbbox((0, 0), prefix, font=font)
-            pxw = prefix_bbox[2] - prefix_bbox[0]
+            pxw = draw.textbbox((0, 0), prefix, font=font)[2]
             cx += pxw
 
-            w_bbox = draw.textbbox((0, 0), w_text, font=font)
-            ww = w_bbox[2] - w_bbox[0]
-
+            ww = draw.textbbox((0, 0), w, font=font)[2]
             if idx_global == active_idx:
-                # Verde con borde negro
                 for ox in range(-stroke, stroke + 1):
                     for oy in range(-stroke, stroke + 1):
                         if ox == 0 and oy == 0:
                             continue
-                        draw.text((cx + ox, y + oy), w_text, font=font, fill=(0, 0, 0, 255))
-                draw.text((cx, y), w_text, font=font, fill=(0, 255, 0, 255))
+                        draw.text((cx + ox, y + oy), w, font=font, fill=(0, 0, 0, 255))
+                draw.text((cx, y), w, font=font, fill=(0, 255, 0, 255))
 
             cx += ww
             idx_global += 1
@@ -185,18 +170,13 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
 
 
 def _draw_title(title: str) -> Image.Image:
-    """
-    Título grande, horizontal, estilo thumbnail (borde negro).
-    """
     title = _sanitize(title).strip().upper()
     img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     font = _font(92)
     stroke = 8
 
-    # centrado algo más arriba que subtítulo
     y = int(H * 0.20)
-
     bbox = draw.textbbox((0, 0), title, font=font)
     tw = bbox[2] - bbox[0]
     x = int((W - tw) / 2)
@@ -210,6 +190,76 @@ def _draw_title(title: str) -> Image.Image:
     return img
 
 
+def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict[str, Any]]:
+    """
+    Soporta:
+    - meta["words"] con start/end
+    - meta["raw_words"] con offset_raw/duration_raw
+    Auto detecta escala: 100ns vs ms vs s.
+    Permite ajuste global SUB_SHIFT (en segundos).
+    """
+    if not isinstance(meta, dict):
+        return []
+
+    # caso normalizado
+    if "words" in meta and meta["words"]:
+        w0 = meta["words"][0]
+        if isinstance(w0, dict) and ("start" in w0 and "end" in w0 and "word" in w0):
+            words = meta["words"]
+        else:
+            words = []
+    else:
+        words = []
+
+    # caso raw
+    if not words:
+        raw = meta.get("raw_words", [])
+        if not raw:
+            return []
+
+        offsets = [float(x.get("offset_raw", x.get("offset", 0))) for x in raw]
+        durs = [float(x.get("duration_raw", x.get("duration", 0))) for x in raw]
+        max_off = max(offsets) if offsets else 0.0
+
+        candidates = {"100ns": 10_000_000.0, "ms": 1000.0, "s": 1.0}
+        best_div = 10_000_000.0
+        best_err = float("inf")
+
+        for _, div in candidates.items():
+            last_t = max_off / div
+            err = abs(last_t - audio_dur)
+            if err < best_err:
+                best_err = err
+                best_div = div
+
+        words = []
+        for x, off, du in zip(raw, offsets, durs):
+            start = off / best_div
+            dur = (du / best_div) if du > 0 else 0.18
+            end = start + dur
+            w = (x.get("word") or x.get("text") or "").strip()
+            if w:
+                words.append({"word": w, "start": float(start), "end": float(end)})
+
+    # shift global por delay mp3 (ajustable sin tocar código)
+    shift = float(os.getenv("SUB_SHIFT", "0.0"))
+    if shift != 0.0:
+        for w in words:
+            w["start"] = max(0.0, w["start"] + shift)
+            w["end"] = max(w["start"] + 0.05, w["end"] + shift)
+
+    # limpieza de rangos
+    out = []
+    for w in words:
+        s = float(w.get("start", 0.0))
+        e = float(w.get("end", s + 0.18))
+        if e <= s:
+            e = s + 0.18
+        if s <= audio_dur:
+            out.append({"word": str(w.get("word", "")).strip(), "start": s, "end": min(e, audio_dur)})
+    return [x for x in out if x["word"]]
+
+
 def render_short(
     audio_path: str,
     title: str,
@@ -218,11 +268,6 @@ def render_short(
     topic_hint: str = "",
     meta_path: Optional[str] = None
 ):
-    """
-    - title: se muestra al inicio (horizontal)
-    - script_text: se usa para subtítulos
-    - meta_path: JSON con timings palabra a palabra (de engine/tts.py)
-    """
     audio = AudioFileClip(audio_path)
     dur = float(audio.duration)
 
@@ -232,47 +277,42 @@ def render_short(
 
     overlays: List[ImageClip] = []
 
-    # 1) TÍTULO al inicio (1.4s)
+    # Título 1.4s
     if title and title.strip():
         timg = _draw_title(title)
-        tclip = _rgba_clip(timg).set_start(0).set_duration(min(1.4, dur))
-        overlays.append(tclip)
+        overlays.append(_rgba_clip(timg).set_start(0).set_duration(min(1.4, dur)))
 
-    # 2) Subtítulos sincronizados por palabra
-    words = []
+    # cargar timings
+    words: List[Dict[str, Any]] = []
     if meta_path and os.path.exists(meta_path):
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
-        words = meta.get("words", [])
+        words = _normalize_word_timings(meta, dur)
 
-    # fallback: si no hay meta, no hay sincronía real
     if not words:
-        # muestra texto completo como 1 bloque (no recomendado, pero evita “sin nada”)
+        # fallback: bloque estático del script (sin sync real)
         st = _sanitize(script_text).upper().strip()
         if st:
-            simple = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.72)
-            overlays.append(_rgba_clip(simple).set_start(1.4).set_duration(max(0.1, dur - 1.4)))
+            frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
+            overlays.append(_rgba_clip(frame).set_start(1.4).set_duration(max(0.1, dur - 1.4)))
     else:
-        # Construimos una ventana de palabras (para no mostrar 200 palabras a la vez)
-        # Mostramos las últimas ~10 palabras y resaltamos la actual.
-        window = 10
+        # rolling window: 12 palabras, highlight palabra actual
+        window = 12
 
-        # Genera clips por palabra (suave y sincronizado)
         for i, w in enumerate(words):
-            start = float(w.get("start", 0.0))
-            end = float(w.get("end", start + 0.18))
+            start = float(w["start"])
+            end = float(w["end"])
 
-            # Evita que el subtítulo arranque debajo del título
+            # subtítulos empiezan después del título
             start = max(start, 1.2)
-
             if end <= start or start >= dur:
                 continue
 
             lo = max(0, i - (window - 1))
-            chunk_words = [x["word"] for x in words[lo:i + 1]]
-            active = len(chunk_words) - 1  # el último es el activo
+            chunk = [x["word"] for x in words[lo:i + 1]]
+            active = len(chunk) - 1
 
-            frame = _draw_subtitle_frame(chunk_words, active_idx=active, y_ratio=0.74)
+            frame = _draw_subtitle_frame(chunk, active_idx=active, y_ratio=0.74)
             overlays.append(_rgba_clip(frame).set_start(start).set_duration(min(end - start, dur - start)))
 
     final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
