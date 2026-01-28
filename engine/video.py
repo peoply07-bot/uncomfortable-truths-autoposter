@@ -8,7 +8,10 @@ from moviepy.editor import ImageClip, AudioFileClip, CompositeVideoClip
 from PIL import Image, ImageDraw, ImageFont
 
 W, H = 1080, 1920
+TICKS_PER_SECOND = 10_000_000  # edge-tts usa 100ns
 
+
+# ----------------- UTILIDADES -----------------
 
 def _font(size=86):
     candidates = [
@@ -85,7 +88,7 @@ def _ken_burns(clip: ImageClip, duration: float) -> ImageClip:
 
 
 def _rgba_clip(pil_rgba: Image.Image) -> ImageClip:
-    arr = np.array(pil_rgba)  # H,W,4
+    arr = np.array(pil_rgba)
     rgb = arr[:, :, :3]
     alpha = arr[:, :, 3] / 255.0
     clip = ImageClip(rgb)
@@ -93,21 +96,17 @@ def _rgba_clip(pil_rgba: Image.Image) -> ImageClip:
     return clip.set_mask(mask)
 
 
-def _wrap_words(draw: ImageDraw.ImageDraw, words: List[str], font: ImageFont.ImageFont, max_width: int) -> List[List[str]]:
-    lines: List[List[str]] = []
-    cur: List[str] = []
+# ----------------- TEXTO -----------------
 
+def _wrap_words(draw, words, font, max_width):
+    lines, cur = [], []
     for w in words:
         test = cur + [w]
-        test_text = " ".join(test)
-        bbox = draw.textbbox((0, 0), test_text, font=font)
-        tw = bbox[2] - bbox[0]
-        if tw <= max_width or not cur:
+        if draw.textbbox((0, 0), " ".join(test), font=font)[2] <= max_width or not cur:
             cur = test
         else:
             lines.append(cur)
             cur = [w]
-
     if cur:
         lines.append(cur)
     return lines[:2]
@@ -121,128 +120,73 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
     stroke = 6
     max_width = int(W * 0.88)
 
-    clean = [_sanitize(w).upper() for w in words if w and w.strip()]
+    clean = [_sanitize(w).upper() for w in words if w.strip()]
     if not clean:
         return img
 
-    lines = _wrap_words(draw, clean, font, max_width=max_width)
-
+    lines = _wrap_words(draw, clean, font, max_width)
     line_h = 95
-    total_h = len(lines) * line_h
-    y0 = int(H * y_ratio) - total_h // 2
+    y0 = int(H * y_ratio) - (len(lines) * line_h) // 2
 
-    idx_global = 0
+    idx = 0
     for li, line_words in enumerate(lines):
-        line_text = " ".join(line_words)
-        bbox = draw.textbbox((0, 0), line_text, font=font)
-        tw = bbox[2] - bbox[0]
-        x = int((W - tw) / 2)
+        text = " ".join(line_words)
+        tw = draw.textbbox((0, 0), text, font=font)[2]
+        x = (W - tw) // 2
         y = y0 + li * line_h
 
-        # borde + blanco
         for ox in range(-stroke, stroke + 1):
             for oy in range(-stroke, stroke + 1):
-                if ox == 0 and oy == 0:
-                    continue
-                draw.text((x + ox, y + oy), line_text, font=font, fill=(0, 0, 0, 255))
-        draw.text((x, y), line_text, font=font, fill=(255, 255, 255, 255))
+                if ox or oy:
+                    draw.text((x + ox, y + oy), text, font=font, fill=(0, 0, 0, 255))
+        draw.text((x, y), text, font=font, fill=(255, 255, 255, 255))
 
-        # overlay verde palabra activa
         cx = x
-        for wi, w in enumerate(line_words):
-            prefix = "" if wi == 0 else " "
-            pxw = draw.textbbox((0, 0), prefix, font=font)[2]
-            cx += pxw
-
+        for w in line_words:
+            pw = draw.textbbox((0, 0), " ", font=font)[2] if cx != x else 0
+            cx += pw
             ww = draw.textbbox((0, 0), w, font=font)[2]
-            if idx_global == active_idx:
+            if idx == active_idx:
                 for ox in range(-stroke, stroke + 1):
                     for oy in range(-stroke, stroke + 1):
-                        if ox == 0 and oy == 0:
-                            continue
-                        draw.text((cx + ox, y + oy), w, font=font, fill=(0, 0, 0, 255))
+                        if ox or oy:
+                            draw.text((cx + ox, y + oy), w, font=font, fill=(0, 0, 0, 255))
                 draw.text((cx, y), w, font=font, fill=(0, 255, 0, 255))
-
             cx += ww
-            idx_global += 1
+            idx += 1
 
     return img
 
 
+# ----------------- TIMINGS -----------------
+
 def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict[str, Any]]:
-    """
-    Soporta:
-    - meta["words"] con start/end
-    - meta["raw_words"] con offset_raw/duration_raw
-    Auto detecta escala: 100ns vs ms vs s.
-    Permite ajuste global SUB_SHIFT (en segundos).
-    """
-    if not isinstance(meta, dict):
-        return []
-
-    # caso normalizado
-    if "words" in meta and meta["words"]:
-        w0 = meta["words"][0]
-        if isinstance(w0, dict) and ("start" in w0 and "end" in w0 and "word" in w0):
-            words = meta["words"]
-        else:
-            words = []
-    else:
-        words = []
-
-    # caso raw
+    words = meta.get("words", [])
     if not words:
         raw = meta.get("raw_words", [])
-        if not raw:
-            return []
+        for r in raw:
+            start = r["offset_raw"] / TICKS_PER_SECOND
+            end = (r["offset_raw"] + r["duration_raw"]) / TICKS_PER_SECOND
+            if end <= start:
+                end = start + 0.1
+            words.append({"word": r["word"], "start": start, "end": end})
 
-        offsets = [float(x.get("offset_raw", x.get("offset", 0))) for x in raw]
-        durs = [float(x.get("duration_raw", x.get("duration", 0))) for x in raw]
-        max_off = max(offsets) if offsets else 0.0
-
-        candidates = {"100ns": 10_000_000.0, "ms": 1000.0, "s": 1.0}
-        best_div = 10_000_000.0
-        best_err = float("inf")
-
-        for _, div in candidates.items():
-            last_t = max_off / div
-            err = abs(last_t - audio_dur)
-            if err < best_err:
-                best_err = err
-                best_div = div
-
-        words = []
-        for x, off, du in zip(raw, offsets, durs):
-            start = off / best_div
-            dur = (du / best_div) if du > 0 else 0.18
-            end = start + dur
-            w = (x.get("word") or x.get("text") or "").strip()
-            if w:
-                words.append({"word": w, "start": float(start), "end": float(end)})
-
-    # shift global por delay mp3 (ajustable sin tocar código)
     shift = float(os.getenv("SUB_SHIFT", "0.0"))
-    if shift != 0.0:
-        for w in words:
-            w["start"] = max(0.0, w["start"] + shift)
-            w["end"] = max(w["start"] + 0.05, w["end"] + shift)
-
-    # limpieza de rangos
     out = []
     for w in words:
-        s = float(w.get("start", 0.0))
-        e = float(w.get("end", s + 0.18))
-        if e <= s:
-            e = s + 0.18
+        s = max(0.0, w["start"] + shift)
+        e = max(s + 0.1, w["end"] + shift)
         if s <= audio_dur:
-            out.append({"word": str(w.get("word", "")).strip(), "start": s, "end": min(e, audio_dur)})
-    return [x for x in out if x["word"]]
+            out.append({"word": w["word"], "start": s, "end": min(e, audio_dur)})
+    return out
 
+
+# ----------------- RENDER -----------------
 
 def render_short(
     audio_path: str,
-    title: str,          # se ignora
-    script_text: str,    # solo fallback
+    title: str,        # ignorado
+    script_text: str,  # ignorado
     out_path: str,
     topic_hint: str = "",
     meta_path: Optional[str] = None
@@ -250,63 +194,33 @@ def render_short(
     audio = AudioFileClip(audio_path)
     dur = float(audio.duration)
 
-    bg_path = _pick_background(topic_hint)
-    base = ImageClip(bg_path).resize((W, H))
+    base = ImageClip(_pick_background(topic_hint)).resize((W, H))
     base = _ken_burns(base, dur)
 
-    overlays: List[ImageClip] = []
+    overlays = []
 
-    # 1) Cargar timings palabra por palabra
-    words = []
-    if meta_path and os.path.exists(meta_path):
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
-        words = meta.get("words", [])
+    with open(meta_path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
 
-    # 2) Si NO hay timings (no debería pasar)
-    if not words:
-        st = _sanitize(script_text).upper().strip()
-        if st:
-            frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
-            overlays.append(
-                _rgba_clip(frame)
-                .set_start(0)
-                .set_duration(dur)
-            )
-    else:
-        # 3) Ajuste opcional por delay de MP3
-        shift = float(os.getenv("SUB_SHIFT", "0.0"))
-        if shift != 0.0:
-            for w in words:
-                w["start"] = max(0.0, float(w["start"]) + shift)
-                w["end"] = max(w["start"] + 0.05, float(w["end"]) + shift)
+    words = _normalize_word_timings(meta, dur)
 
-        # 4) Karaoke: ventana de palabras
-        window = int(os.getenv("SUB_WINDOW", "12"))
+    window = int(os.getenv("SUB_WINDOW", "12"))
+    MIN_WORD_DUR = float(os.getenv("MIN_WORD_DUR", "0.10"))
 
-        for i, w in enumerate(words):
-            start = float(w["start"])
-            end = float(w["end"])
+    for i, w in enumerate(words):
+        start = w["start"]
+        end = max(w["end"], start + MIN_WORD_DUR)
+        if start >= dur:
+            continue
 
-            if end <= start or start >= dur:
-                continue
+        chunk = words[max(0, i - window + 1):i + 1]
+        frame = _draw_subtitle_frame([x["word"] for x in chunk], len(chunk) - 1)
 
-            lo = max(0, i - (window - 1))
-            chunk_words = [x["word"] for x in words[lo:i + 1] if x.get("word")]
-
-            active = len(chunk_words) - 1
-
-            frame = _draw_subtitle_frame(
-                chunk_words,
-                active_idx=active,
-                y_ratio=0.74
-            )
-
-            overlays.append(
-                _rgba_clip(frame)
-                .set_start(start)
-                .set_duration(min(end - start, dur - start))
-            )
+        overlays.append(
+            _rgba_clip(frame)
+            .set_start(start)
+            .set_duration(min(end - start, dur - start))
+        )
 
     final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
