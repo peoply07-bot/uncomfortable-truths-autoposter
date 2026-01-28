@@ -5,11 +5,12 @@ from typing import Any, Dict, List, Optional
 
 import edge_tts
 
-
-# FORZADO a USA (no usa env var)
+# FORZADO a USA
 VOICE = "en-US-GuyNeural"   # o "en-US-JennyNeural"
 RATE = "+0%"
 PITCH = "+0Hz"
+
+TICKS_PER_SECOND = 10_000_000  # 100ns units
 
 
 async def _run_tts(text: str, out_audio_path: str, out_meta_path: str):
@@ -25,21 +26,42 @@ async def _run_tts(text: str, out_audio_path: str, out_meta_path: str):
             if chunk["type"] == "audio":
                 f.write(chunk["data"])
             elif chunk["type"] == "WordBoundary":
-                # Guardamos RAW (sin convertir todavía)
+                w = (chunk.get("text") or "").strip()
+                if not w:
+                    continue
+
+                offset_raw = int(chunk.get("offset", 0) or 0)
+                duration_raw = int(chunk.get("duration", 0) or 0)
+
                 raw_words.append({
-                    "word": (chunk.get("text") or "").strip(),
-                    "offset_raw": chunk.get("offset", 0),
-                    "duration_raw": chunk.get("duration", 0),
+                    "word": w,
+                    "offset_raw": offset_raw,
+                    "duration_raw": duration_raw,
                 })
 
-    # Limpieza
-    raw_words = [w for w in raw_words if w["word"]]
+    # Construimos words en segundos (lo que espera video.py)
+    words: List[Dict[str, Any]] = []
+    for w in raw_words:
+        start = float(w["offset_raw"]) / TICKS_PER_SECOND
+        end = float(w["offset_raw"] + w["duration_raw"]) / TICKS_PER_SECOND
+
+        # Guardas por seguridad
+        if end <= start:
+            end = start + 0.06  # mínimo visible
+
+        words.append({
+            "word": w["word"],
+            "start": round(start, 3),
+            "end": round(end, 3),
+        })
 
     meta = {
         "voice": VOICE,
         "rate": RATE,
         "pitch": PITCH,
-        "raw_words": raw_words,
+        "text": text,
+        "words": words,        # <-- CLAVE (video.py usa esto)
+        "raw_words": raw_words # opcional, por si quieres debug
     }
 
     with open(out_meta_path, "w", encoding="utf-8") as jf:
@@ -48,7 +70,7 @@ async def _run_tts(text: str, out_audio_path: str, out_meta_path: str):
 
 def make_tts(text: str, out_audio_path: str, out_meta_path: Optional[str] = None) -> str:
     """
-    Genera MP3 + JSON (raw).
+    Genera MP3 + JSON con timings palabra a palabra.
     Devuelve la ruta del JSON.
     """
     if out_meta_path is None:
