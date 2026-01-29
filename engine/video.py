@@ -161,24 +161,92 @@ def _draw_subtitle_frame(words: List[str], active_idx: int, y_ratio: float = 0.7
 # ----------------- TIMINGS -----------------
 
 def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict[str, Any]]:
-    words = meta.get("words", [])
-    if not words:
-        raw = meta.get("raw_words", [])
-        for r in raw:
-            start = r["offset_raw"] / TICKS_PER_SECOND
-            end = (r["offset_raw"] + r["duration_raw"]) / TICKS_PER_SECOND
-            if end <= start:
-                end = start + 0.1
-            words.append({"word": r["word"], "start": start, "end": end})
+    """
+    Intenta obtener timings palabra-por-palabra.
+    Soporta:
+      - meta["words"] con start/end
+      - meta["raw_words"] con offset_raw/duration_raw (edge-tts)
+    Si no hay nada, hace fallback: reparte palabras del texto por duración del audio.
+    """
+    if not isinstance(meta, dict) or audio_dur <= 0:
+        return []
 
-    shift = float(os.getenv("SUB_SHIFT", "0.0"))
+    # 1) Si viene ya normalizado
+    words = meta.get("words") or []
+    if words and isinstance(words, list):
+        w0 = words[0] if words else {}
+        if isinstance(w0, dict) and ("start" in w0 and "end" in w0 and "word" in w0):
+            out = []
+            for w in words:
+                s = float(w.get("start", 0.0))
+                e = float(w.get("end", s + 0.18))
+                if e <= s:
+                    e = s + 0.18
+                if 0 <= s <= audio_dur:
+                    out.append({"word": str(w.get("word", "")).strip(), "start": s, "end": min(e, audio_dur)})
+            out = [x for x in out if x["word"]]
+            if out:
+                return out
+
+    # 2) Edge-TTS RAW
+    raw = meta.get("raw_words") or []
+    if raw and isinstance(raw, list):
+        offsets = [float(x.get("offset_raw", x.get("offset", 0))) for x in raw]
+        durs = [float(x.get("duration_raw", x.get("duration", 0))) for x in raw]
+        max_off = max(offsets) if offsets else 0.0
+
+        # autodetect escala (100ns / ms / s)
+        candidates = [10_000_000.0, 1000.0, 1.0]  # div
+        best_div = 10_000_000.0
+        best_err = float("inf")
+
+        for div in candidates:
+            last_t = max_off / div
+            err = abs(last_t - audio_dur)
+            if err < best_err:
+                best_err = err
+                best_div = div
+
+        out = []
+        for x, off, du in zip(raw, offsets, durs):
+            word = (x.get("word") or x.get("text") or "").strip()
+            if not word:
+                continue
+            start = off / best_div
+            dur_s = (du / best_div) if du > 0 else 0.18
+            end = start + dur_s
+            if end <= start:
+                end = start + 0.18
+            if start <= audio_dur:
+                out.append({"word": word, "start": float(start), "end": float(min(end, audio_dur))})
+
+        out = [x for x in out if x["word"]]
+        if out:
+            return out
+
+    # 3) FALLBACK: no hay WordBoundary => repartir palabras del texto
+    txt = (meta.get("text") or "").strip()
+    # Si tu tts.py no guarda "text", intentamos con script_text desde afuera (lo veremos en render_short)
+    if not txt:
+        return []
+
+    tokens = [t for t in txt.replace("\n", " ").split(" ") if t.strip()]
+    if not tokens:
+        return []
+
+    step = audio_dur / max(len(tokens), 1)
     out = []
-    for w in words:
-        s = max(0.0, w["start"] + shift)
-        e = max(s + 0.1, w["end"] + shift)
-        if s <= audio_dur:
-            out.append({"word": w["word"], "start": s, "end": min(e, audio_dur)})
+    t = 0.0
+    for tok in tokens:
+        s = t
+        e = min(audio_dur, t + step)
+        if e <= s:
+            e = min(audio_dur, s + 0.18)
+        out.append({"word": tok, "start": s, "end": e})
+        t += step
+
     return out
+
 
 
 # ----------------- RENDER -----------------
@@ -186,7 +254,7 @@ def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict
 def render_short(
     audio_path: str,
     title: str,        # ignorado
-    script_text: str,  # ignorado
+    script_text: str,  # se usa para fallback si no hay WordBoundary
     out_path: str,
     topic_hint: str = "",
     meta_path: Optional[str] = None
@@ -199,43 +267,50 @@ def render_short(
 
     overlays = []
 
-    # --- Cargar y normalizar metadata ---
     if not meta_path or not os.path.exists(meta_path):
         raise RuntimeError("meta_path no existe – no hay subtítulos")
 
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
+    # 👇 Importante: si tts.py no guarda el texto, lo metemos aquí para fallback
+    if "text" not in meta or not meta.get("text"):
+        meta["text"] = script_text or ""
+
     words = _normalize_word_timings(meta, audio_dur=dur)
 
+    # si aun así no hay palabras, mostramos bloque fijo (último fallback)
     if not words:
-        raise RuntimeError("No se pudieron normalizar palabras")
+        st = _sanitize(script_text).upper().strip()
+        if st:
+            frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
+            overlays.append(_rgba_clip(frame).set_start(0).set_duration(dur))
+        final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
+        return
 
-    # --- Parámetros ESTABLES ---
-    WINDOW = int(os.getenv("SUB_WINDOW", "8"))       # menos palabras = más legible
-    MIN_WORD_DUR = float(os.getenv("MIN_WORD_DUR", "0.18"))  # 👈 CLAVE
+    window = int(os.getenv("SUB_WINDOW", "8"))
+    MIN_WORD_DUR = float(os.getenv("MIN_WORD_DUR", "0.18"))
     Y_RATIO = float(os.getenv("SUB_Y", "0.74"))
 
     for i, w in enumerate(words):
         start = float(w["start"])
         end = float(w["end"])
 
-        # clamp fuerte
+        # clamp duro para que MoviePy SIEMPRE lo dibuje
         if end - start < MIN_WORD_DUR:
             end = start + MIN_WORD_DUR
 
         if start >= dur:
             break
 
-        lo = max(0, i - WINDOW + 1)
-        chunk_words = [x["word"] for x in words[lo:i + 1]]
-        active_idx = len(chunk_words) - 1
+        chunk = words[max(0, i - window + 1):i + 1]
+        chunk_words = [x["word"] for x in chunk if x.get("word")]
+        if not chunk_words:
+            continue
 
-        frame = _draw_subtitle_frame(
-            chunk_words,
-            active_idx=active_idx,
-            y_ratio=Y_RATIO
-        )
+        frame = _draw_subtitle_frame(chunk_words, active_idx=len(chunk_words) - 1, y_ratio=Y_RATIO)
 
         overlays.append(
             _rgba_clip(frame)
@@ -243,18 +318,6 @@ def render_short(
             .set_duration(min(end - start, dur - start))
         )
 
-    final = CompositeVideoClip(
-        [base, *overlays],
-        size=(W, H)
-    ).set_audio(audio)
-
+    final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-
-    final.write_videofile(
-        out_path,
-        fps=30,
-        codec="libx264",
-        audio_codec="aac",
-        threads=4,
-        preset="medium"
-    )
+    final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
