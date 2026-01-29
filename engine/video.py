@@ -199,22 +199,43 @@ def render_short(
 
     overlays = []
 
+    # --- Cargar y normalizar metadata ---
+    if not meta_path or not os.path.exists(meta_path):
+        raise RuntimeError("meta_path no existe – no hay subtítulos")
+
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
-    words = _normalize_word_timings(meta, dur)
+    words = _normalize_word_timings(meta, audio_dur=dur)
 
-    window = int(os.getenv("SUB_WINDOW", "12"))
-    MIN_WORD_DUR = float(os.getenv("MIN_WORD_DUR", "0.10"))
+    if not words:
+        raise RuntimeError("No se pudieron normalizar palabras")
+
+    # --- Parámetros ESTABLES ---
+    WINDOW = int(os.getenv("SUB_WINDOW", "8"))       # menos palabras = más legible
+    MIN_WORD_DUR = float(os.getenv("MIN_WORD_DUR", "0.18"))  # 👈 CLAVE
+    Y_RATIO = float(os.getenv("SUB_Y", "0.74"))
 
     for i, w in enumerate(words):
-        start = w["start"]
-        end = max(w["end"], start + MIN_WORD_DUR)
-        if start >= dur:
-            continue
+        start = float(w["start"])
+        end = float(w["end"])
 
-        chunk = words[max(0, i - window + 1):i + 1]
-        frame = _draw_subtitle_frame([x["word"] for x in chunk], len(chunk) - 1)
+        # clamp fuerte
+        if end - start < MIN_WORD_DUR:
+            end = start + MIN_WORD_DUR
+
+        if start >= dur:
+            break
+
+        lo = max(0, i - WINDOW + 1)
+        chunk_words = [x["word"] for x in words[lo:i + 1]]
+        active_idx = len(chunk_words) - 1
+
+        frame = _draw_subtitle_frame(
+            chunk_words,
+            active_idx=active_idx,
+            y_ratio=Y_RATIO
+        )
 
         overlays.append(
             _rgba_clip(frame)
@@ -222,6 +243,18 @@ def render_short(
             .set_duration(min(end - start, dur - start))
         )
 
-    final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
+    final = CompositeVideoClip(
+        [base, *overlays],
+        size=(W, H)
+    ).set_audio(audio)
+
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
+
+    final.write_videofile(
+        out_path,
+        fps=30,
+        codec="libx264",
+        audio_codec="aac",
+        threads=4,
+        preset="medium"
+    )
