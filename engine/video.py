@@ -254,7 +254,7 @@ def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict
 def render_short(
     audio_path: str,
     title: str,        # ignorado
-    script_text: str,  # fallback
+    script_text: str,  # fallback / reconcile
     out_path: str,
     topic_hint: str = "",
     meta_path: Optional[str] = None
@@ -273,41 +273,68 @@ def render_short(
 
     words = _normalize_word_timings(meta, audio_dur=dur)
 
+    # --- Reconciliar: si Edge-TTS se “come” el final, lo rellenamos ---
+    # tokenizamos el texto real
+    tokens = [t for t in (script_text or "").replace("\n", " ").split(" ") if t.strip()]
+    if tokens and words:
+        # comparamos cantidad, si faltan al final, las agregamos
+        if len(words) < len(tokens):
+            last_end = float(words[-1]["end"])
+            remaining = tokens[len(words):]
+            # repartimos lo que falta en el tiempo restante (con mínimo por palabra)
+            remaining_time = max(0.0, dur - last_end)
+            if remaining_time > 0.05:
+                step = max(0.12, remaining_time / max(1, len(remaining)))
+                t = last_end
+                for tok in remaining:
+                    s = t
+                    e = min(dur, t + step)
+                    if e <= s:
+                        e = min(dur, s + 0.18)
+                    words.append({"word": tok, "start": s, "end": e})
+                    t += step
+
     if not words:
-        # fallback absoluto (no debería pasar ya)
+        # último fallback: bloque fijo
         st = _sanitize(script_text).upper().strip()
         frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
         final = CompositeVideoClip(
             [base, _rgba_clip(frame).set_start(0).set_duration(dur)],
             size=(W, H)
         ).set_audio(audio)
+        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
         final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
         return
 
     overlays = []
 
     WINDOW = int(os.getenv("SUB_WINDOW", "8"))
-    MIN_DUR = float(os.getenv("MIN_WORD_DUR", "0.15"))
+    MIN_DUR = float(os.getenv("MIN_WORD_DUR", "0.18"))
     Y_RATIO = float(os.getenv("SUB_Y", "0.74"))
 
     for i in range(len(words)):
-        w = words[i]
+        start = float(words[i]["start"])
+        end_real = float(words[i].get("end", start + MIN_DUR))
 
-        start = float(w["start"])
-        end = (
-            float(words[i + 1]["start"])
-            if i + 1 < len(words)
-            else min(start + 0.4, dur)
-        )
+        # Duración del clip = hasta la siguiente palabra (para continuidad)
+        if i + 1 < len(words):
+            next_start = float(words[i + 1]["start"])
+            end = max(end_real, next_start)
+        else:
+            # ÚLTIMO: que se quede hasta el final del audio
+            end = dur
 
+        # clamp mínimo
         if end - start < MIN_DUR:
             end = start + MIN_DUR
 
         if start >= dur:
             break
 
-        chunk = words[max(0, i - WINDOW + 1): i + 1]
-        chunk_words = [x["word"] for x in chunk if x.get("word")]
+        lo = max(0, i - WINDOW + 1)
+        chunk_words = [x["word"] for x in words[lo:i + 1] if x.get("word")]
+        if not chunk_words:
+            continue
 
         frame = _draw_subtitle_frame(
             chunk_words,
