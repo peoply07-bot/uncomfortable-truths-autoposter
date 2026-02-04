@@ -254,7 +254,7 @@ def _normalize_word_timings(meta: Dict[str, Any], audio_dur: float) -> List[Dict
 def render_short(
     audio_path: str,
     title: str,        # ignorado
-    script_text: str,  # se usa para fallback si no hay WordBoundary
+    script_text: str,  # fallback
     out_path: str,
     topic_hint: str = "",
     meta_path: Optional[str] = None
@@ -265,52 +265,55 @@ def render_short(
     base = ImageClip(_pick_background(topic_hint)).resize((W, H))
     base = _ken_burns(base, dur)
 
-    overlays = []
-
     if not meta_path or not os.path.exists(meta_path):
         raise RuntimeError("meta_path no existe – no hay subtítulos")
 
     with open(meta_path, "r", encoding="utf-8") as f:
         meta = json.load(f)
 
-    # 👇 Importante: si tts.py no guarda el texto, lo metemos aquí para fallback
-    if "text" not in meta or not meta.get("text"):
-        meta["text"] = script_text or ""
-
     words = _normalize_word_timings(meta, audio_dur=dur)
 
-    # si aun así no hay palabras, mostramos bloque fijo (último fallback)
     if not words:
+        # fallback absoluto (no debería pasar ya)
         st = _sanitize(script_text).upper().strip()
-        if st:
-            frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
-            overlays.append(_rgba_clip(frame).set_start(0).set_duration(dur))
-        final = CompositeVideoClip([base, *overlays], size=(W, H)).set_audio(audio)
-        os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+        frame = _draw_subtitle_frame(st.split(), active_idx=-1, y_ratio=0.74)
+        final = CompositeVideoClip(
+            [base, _rgba_clip(frame).set_start(0).set_duration(dur)],
+            size=(W, H)
+        ).set_audio(audio)
         final.write_videofile(out_path, fps=30, codec="libx264", audio_codec="aac")
         return
 
-    window = int(os.getenv("SUB_WINDOW", "8"))
-    MIN_WORD_DUR = float(os.getenv("MIN_WORD_DUR", "0.18"))
+    overlays = []
+
+    WINDOW = int(os.getenv("SUB_WINDOW", "8"))
+    MIN_DUR = float(os.getenv("MIN_WORD_DUR", "0.15"))
     Y_RATIO = float(os.getenv("SUB_Y", "0.74"))
 
-    for i, w in enumerate(words):
-        start = float(w["start"])
-        end = float(w["end"])
+    for i in range(len(words)):
+        w = words[i]
 
-        # clamp duro para que MoviePy SIEMPRE lo dibuje
-        if end - start < MIN_WORD_DUR:
-            end = start + MIN_WORD_DUR
+        start = float(w["start"])
+        end = (
+            float(words[i + 1]["start"])
+            if i + 1 < len(words)
+            else min(start + 0.4, dur)
+        )
+
+        if end - start < MIN_DUR:
+            end = start + MIN_DUR
 
         if start >= dur:
             break
 
-        chunk = words[max(0, i - window + 1):i + 1]
+        chunk = words[max(0, i - WINDOW + 1): i + 1]
         chunk_words = [x["word"] for x in chunk if x.get("word")]
-        if not chunk_words:
-            continue
 
-        frame = _draw_subtitle_frame(chunk_words, active_idx=len(chunk_words) - 1, y_ratio=Y_RATIO)
+        frame = _draw_subtitle_frame(
+            chunk_words,
+            active_idx=len(chunk_words) - 1,
+            y_ratio=Y_RATIO
+        )
 
         overlays.append(
             _rgba_clip(frame)
